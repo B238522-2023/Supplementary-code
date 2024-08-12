@@ -1,0 +1,375 @@
+---
+title: "ROC_plot"
+author: "Chloe"
+date: "2024-07-07"
+output:
+  html_document: default
+  pdf_document: default
+  always_allow_html: true
+---
+
+
+```{r setup, message=FALSE}
+library(pROC)
+library(ggplot2)
+library(dplyr)
+library(parallel)
+library(PRROC)
+```
+
+# combine the data
+```{r}
+data <- read.csv("Combined_ROC_Data.csv")
+data <- na.omit(data)
+# Make sure the category labels are factors and set the levels
+data$Class <- factor(data$Class, levels = c("Neutral", "Disease"))
+# Convert factor labels to numeric
+data$Class_numeric <- as.numeric(data$Class) - 1
+
+data$Source <- factor(data$Source, levels = c("ClinVar_Benign", "ClinVar_Pathogenic"))
+# Convert factor labels to numeric
+data$Source_numeric <- as.numeric(data$Source) - 1
+```
+# data check
+```{r}
+create_violin_plot <- function(data, variable_name, title, use_log = FALSE) {
+  p <- ggplot(data, aes(x = Class, y = .data[[variable_name]], fill = Class)) +
+    geom_violin(trim = FALSE) +
+    geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
+    labs(title = title, x = "Class", y = variable_name) +
+    theme_minimal() +
+    scale_fill_brewer(palette = "Set1")
+
+  # Apply log scale based on the use_log parameter
+  if (use_log) {
+    p <- p + scale_y_log10()
+  }
+
+  return(p)
+}
+
+# Use log scale for TagScore
+tagScore_violin_plot <- create_violin_plot(data, "TagScore", "Distribution of Adjusted TagScore(log) by Class", TRUE)
+
+# Do not use log scale for pLDDT and RSA
+pLDDT_violin_plot <- create_violin_plot(data, "pLDDT", "Distribution of pLDDT by Class")
+RSA_violin_plot <- create_violin_plot(data, "RSA", "Distribution of RSA by Class")
+
+tagScore_violin_plot
+pLDDT_violin_plot
+RSA_violin_plot
+```
+# defination of functions
+```{R}
+# Calculate ROC, AUC, and optimal threshold for each metric
+roc_analysis <- function(metrics, dataset, class_numeric_column) {
+
+    roc_data <- data.frame()
+    pr_data <- data.frame()
+    roc_objects <- list()  # Used to store ROC objects for each metric
+
+    for (metric in metrics) {
+        print(metric)
+        print(head(dataset[[metric]]))
+        roc_obj <- roc(dataset[[class_numeric_column]], dataset[[metric]])
+        roc_objects[[metric]] <- roc_obj # Store ROC object for later comparison
+        
+        # Calculate the optimal threshold by minimum Euclidean distance
+        distances <- sqrt((1 - roc_obj$sensitivities)^2 + (1 - roc_obj$specificities)^2)
+        optimal_index <- which.min(distances)
+        optimal_threshold <- roc_obj$thresholds[optimal_index]
+        
+        # Calculate AUC and the 95% confidence interval
+        auc_val <- auc(roc_obj)
+        print(paste("ROC AUC for", metric, ":", round(auc_val, 3)))
+        auc_ci <- ci.auc(roc_obj, conf = 0.95, boot.n = 2000)
+        auc_label <- paste(metric, sprintf("(AUC %.3f)", auc_val))
+        print(paste("95% CI for AUC of", metric, ":", auc_ci))
+        print(paste("optimal threshold for", metric, ":", round(optimal_threshold, 3)))
+
+        temp_roc_data <- data.frame(
+          FPR = 1 - roc_obj$specificities,
+          TPR = roc_obj$sensitivities,
+          Metric = rep(metric, length(roc_obj$sensitivities)),
+          AUC = rep(round(auc_val, 3), length(roc_obj$sensitivities)),
+          AUC_CI = paste(round(auc_ci[1], 3), round(auc_ci[3], 3), sep="-"),
+          OptimalThreshold = rep(optimal_threshold, length(roc_obj$sensitivities)),
+          LegendLabel = rep(auc_label, length(roc_obj$sensitivities))
+        )
+        roc_data <- rbind(roc_data, temp_roc_data)  # Append current metric's ROC data to roc_data
+        
+        # Calculate PR curve data
+        pr_obj <- pr.curve(scores.class0 = dataset[[metric]], weights.class0 = dataset[[class_numeric_column]], curve = TRUE)
+        pr_auc_val <- pr_obj$auc.integral
+        pr_auc_label <- paste(metric, sprintf("(PR AUC %.3f)", pr_auc_val))
+        print(paste("PR AUC for", metric, ":", round(pr_auc_val, 3)))
+        # Calculate baseline precision
+        baseline_precision <- mean(dataset[[class_numeric_column]])
+        
+        #print("111")
+        #print(head(dataset[[metric]]))
+        #print(head(dataset[[class_numeric_column]]))
+        #print(class(pr_obj$curve))
+        #print(pr_obj$curve)
+        
+        temp_pr_data <- data.frame(
+          Precision = pr_obj$curve[, 2],
+          Recall = pr_obj$curve[, 1],
+          Metric = rep(metric, length(pr_obj$curve[, 1])),
+          AUC = rep(round(pr_auc_val, 3), length(pr_obj$curve[, 1])),
+          LegendLabel = rep(pr_auc_label, length(pr_obj$curve[, 1])),
+          BaselinePrecision = rep(baseline_precision, length(pr_obj$curve[, 1]))
+        )
+
+        
+        pr_data <- rbind(pr_data, temp_pr_data)  # Append current metric's PR data to pr_data
+    }
+    return(list(roc_data = roc_data, pr_data = pr_data, roc_objects = roc_objects))
+}
+
+plot_roc_curves <- function(roc_data){  
+  # Plot ROC curves for all metrics
+  ggplot(roc_data, aes(x = FPR, y = TPR, color = LegendLabel, group = Metric)) +
+    geom_line(linewidth = 1.3) +
+    geom_abline(linetype = "dashed", color = "black", linewidth = 1) +
+    scale_x_continuous(expand = c(0, 0)) +  # Remove expansion from x-axis
+    scale_y_continuous(expand = c(0, 0), breaks = seq(0, 1, 0.25), labels = ifelse(seq(0, 1, 0.25) == 0, "", seq(0, 1, 0.25))) +
+    labs(x = "False Positive Rate",
+         y = "True Positive Rate") +
+    #scale_color_brewer(palette = "Set1") +
+    scale_color_brewer(palette = "Dark2") +
+    coord_fixed(ratio = 1) +
+    theme_minimal() +
+    theme(
+      panel.background = element_rect(fill = "white", color = NA),  # Set panel background to white
+      panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.8),  # Set border color to gray and make it bold
+      text = element_text(color = "black"),  # Set text color to black
+      legend.position = "bottom",
+      legend.title = element_blank(),
+      legend.text = element_text(size = 10),  # Set legend text size and color
+      axis.title = element_text(size = 12),
+      axis.text = element_text(size = 10)
+    )
+}
+
+plot_pr_curves <- function(pr_data) {  
+  ggplot(pr_data, aes(x = Recall, y = Precision, color = LegendLabel, group = Metric)) +
+    geom_line(linewidth = 1) +
+    geom_hline(aes(yintercept = BaselinePrecision[1]), linetype = "dashed", color = "black") +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0), breaks = seq(0, 1, 0.25), labels = ifelse(seq(0, 1, 0.25) == 0, "", seq(0, 1, 0.25))) +
+    labs(x = "Recall",
+         y = "Precision") +
+    #scale_color_brewer(palette = "Set1") +
+    scale_color_brewer(palette = "Dark2") +
+    coord_fixed(ratio = 1) +
+    theme_minimal() +
+    theme(
+      panel.background = element_rect(fill = "white", color = NA),
+      panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.8),
+      text = element_text(color = "black"),
+      legend.position = "bottom",
+      legend.title = element_blank(),
+      legend.text = element_text(size = 10),
+      axis.title = element_text(size = 12),
+      axis.text = element_text(size = 10)
+    )
+}
+
+# Function to compare AUC values between different metrics
+compare_auc <- function(roc_objects, comparison_pairs) {
+  results <- list()
+  for (pair in comparison_pairs) {
+    test_result <- roc.test(roc_objects[[pair[1]]], roc_objects[[pair[2]]], method = "bootstrap")
+    results[[paste(pair[1], "vs", pair[2])]] <- test_result
+  }
+  return(results)
+}
+
+# Analyze the percentage of samples above and below the optimal threshold for each metric
+calculate_threshold_stats <- function(roc_data, data) {
+  threshold_stats <- lapply(unique(roc_data$Metric), function(metric) {
+    metric_data <- roc_data[roc_data$Metric == metric, ]
+    threshold <- unique(metric_data$OptimalThreshold)
+    
+    above_threshold <- mean(data[[metric]] > threshold)
+    below_threshold <- mean(data[[metric]] <= threshold)
+    
+    # Return a list including the metric name, and the percentages above and below the threshold
+    list(
+      Metric = metric,
+      AboveThreshold = above_threshold * 100,  # Convert to percentage
+      BelowThreshold = below_threshold * 100   # Convert to percentage
+    )
+  })
+  
+  # Convert the list to a data frame for easier viewing
+  threshold_stats_df <- do.call(rbind, lapply(threshold_stats, data.frame))
+  row.names(threshold_stats_df) <- NULL  # Reset row names to enhance readability
+  return(threshold_stats_df)
+}
+
+```
+
+# ROC analysis: 1.Disease vs Neutral for the full dataset
+```{r}
+metrics <- c("TagScore", "pLDDT", "RSA")
+class_numeric_column <- "Class_numeric"
+result <- roc_analysis(metrics, data, class_numeric_column)
+
+table(data$Class_numeric)
+
+# Plot ROC curves
+roc_curve <- plot_roc_curves(result$roc_data)
+roc_curve
+
+pr_curve <- plot_pr_curves(result$pr_data)
+print(pr_curve)
+
+# Compare AUC values
+comparison_pairs <- list(c("TagScore", "pLDDT"), c("TagScore", "RSA"), c("pLDDT", "RSA"))
+auc_comparisons <- compare_auc(result$roc_objects, comparison_pairs)
+print(auc_comparisons)
+
+
+full_threshold_stats <- calculate_threshold_stats(result$roc_data, data)
+print(full_threshold_stats)
+```
+# ROC analysis: 2.Disease vs Neutral by only filtering down the Neutral variants to the same Genes/Uniprot IDs as in the Disease group
+```{r}
+# Filter for Disease-related Genes/Uniprot IDs
+disease_genes <- unique(data$Uniprot[data$Class == "Disease"])
+neutral_genes <- unique(data$Uniprot[data$Class == "Neutral"])
+common_genes <- intersect(disease_genes, neutral_genes)  # Identify genes appearing in both disease and neutral groups
+
+filtered_data <- data %>% 
+  filter(Uniprot %in% common_genes)
+
+
+results_filtered <- roc_analysis(metrics, filtered_data, class_numeric_column)
+
+table(filtered_data$Class_numeric)
+# Plot ROC curves
+roc_curve_filtered <- plot_roc_curves(results_filtered$roc_data)
+roc_curve_filtered
+
+pr_curve_filtered <- plot_pr_curves(results_filtered$pr_data)
+print(pr_curve_filtered)
+
+# Compare AUC values
+comparison_pairs_filtered <- list(c("TagScore", "pLDDT"), c("TagScore", "RSA"), c("pLDDT", "RSA"))
+auc_comparisons_filtered <- compare_auc(results_filtered$roc_objects, comparison_pairs)
+print(auc_comparisons_filtered)
+
+filtered_threshold_stats <- calculate_threshold_stats(results_filtered$roc_data, filtered_data)
+print(filtered_threshold_stats)
+```
+# ROC analysis: 3.ClinVar pathogenic vs ClinVar benign.
+```{r}
+pathogenic_data <- data %>% filter(Source == "ClinVar_Pathogenic")
+benign_data <- data %>% filter(Source  == "ClinVar_Benign")
+# Combine data and analyze
+combined_clinvar_data <- bind_rows(pathogenic_data, benign_data)
+
+
+source_numeric_column <- "Source_numeric"
+results_clinvar <- roc_analysis(metrics, combined_clinvar_data, source_numeric_column)
+
+table(combined_clinvar_data$Source_numeric)
+# Plot ROC curves
+roc_curve_clinvar <- plot_roc_curves(results_clinvar$roc_data)
+roc_curve_clinvar
+
+pr_curve_clinvar <- plot_pr_curves(results_clinvar$pr_data)
+print(pr_curve_clinvar)
+
+# Compare AUC values
+comparison_pairs_clinvar <- list(c("TagScore", "pLDDT"), c("TagScore", "RSA"), c("pLDDT", "RSA"))
+auc_comparisons_clinvar <- compare_auc(results_clinvar$roc_objects, comparison_pairs)
+print(auc_comparisons_clinvar)
+
+
+clinvar_threshold_stats <- calculate_threshold_stats(results_clinvar$roc_data, combined_clinvar_data)
+print(clinvar_threshold_stats)
+```
+
+```{r}
+table(data$Class_numeric)
+table(filtered_data$Class_numeric)
+table(combined_clinvar_data$Source_numeric)
+
+
+counts_data <- c(table(data$Class_numeric), table(filtered_data$Class_numeric), table(combined_clinvar_data$Source_numeric))
+print(counts_data)
+dataset_names <- c("Full Dataset", "Filtered Dataset", "Combined ClinVar Dataset")
+
+# Create data frame
+class_distribution <- data.frame(
+  dataset = rep(dataset_names, each = 2),
+  class = rep(c("Neutral(0)", "Disease(1)"), 3),
+  counts = counts_data
+)
+
+# Ensure data frame structure is correct
+print(class_distribution)
+
+# Display all datasets in the same window using faceting
+ggplot(class_distribution, aes(x = class, y = counts, fill = class)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ dataset, scales = "free_y") +  # Allow each facet to have an independent Y-axis
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Class Distribution Across Datasets",
+       x = "Class",
+       y = "Count",
+       fill = "Class") +
+  theme_minimal()+
+  #scale_fill_brewer(palette = "Set1")
+  scale_fill_brewer(palette = "Dark2") 
+```
+# ci
+```{r}
+roc_data <- result$roc_data
+filtered_roc_data <- results_filtered$roc_data
+combined_roc_data <- results_clinvar$roc_data
+
+# Remove duplicates and add dataset labels
+roc_data_unique <- roc_data %>% 
+  distinct(Metric, AUC, AUC_CI, .keep_all = TRUE) %>%
+  mutate(Dataset = "Full Dataset")
+
+filtered_roc_data_unique <- filtered_roc_data %>% 
+  distinct(Metric, AUC, AUC_CI, .keep_all = TRUE) %>%
+  mutate(Dataset = "Same Genes")
+
+combined_roc_data_unique <- combined_roc_data %>% 
+  distinct(Metric, AUC, AUC_CI, .keep_all = TRUE) %>%
+  mutate(Dataset = "ClinVar")
+
+# Combine all data
+all_roc_data <- bind_rows(roc_data_unique, filtered_roc_data_unique, combined_roc_data_unique)
+
+# Create a new column containing Metric and AUC information
+all_roc_data <- all_roc_data %>%
+  mutate(Metric_with_AUC = paste0(Metric, " (AUC ", AUC, ")"))
+
+# Plot AUC and confidence intervals
+auc_plot <- ggplot(all_roc_data, aes(x = Metric, y = AUC, fill = Dataset)) +
+    geom_col(position = "dodge") +  # Display bar chart grouped by dataset
+    geom_errorbar(aes(ymin = as.numeric(sub(".*-", "", AUC_CI)),
+                      ymax = as.numeric(sub("-.*", "", AUC_CI))), width = 0.2, position = position_dodge(0.9)) +
+    facet_wrap(~ Dataset) +  # Display faceted by dataset
+    labs(title = "AUC Values and Confidence Intervals for Each Metric across Datasets",
+         x = "Metric",
+         y = "ROC AUC",
+         fill = "Metric (AUC)") +
+    theme_minimal() +
+    #scale_fill_brewer(palette = "Set1") +
+    scale_fill_brewer(palette = "Dark2")  +
+    theme(text = element_text(size = 12),
+          panel.grid.major = element_blank(),  # Remove background main grid lines
+          panel.grid.minor = element_blank()  # Remove background secondary grid lines
+        )  # Adjust text size
+
+# Print chart
+print(auc_plot)
+```
