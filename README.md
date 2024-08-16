@@ -12,3 +12,6 @@ data availability:
 2. Gene_enrichment.zip: Gene enrichment results.
 3. pubmed_query.zip: Queried PubMed ID for model validation.
 4. clinical_human_insertion.zip: Clinical human insertion dataset.
+5. DMS_ProteinGym_indels.zip: DMS data retrieved from ProteinGym.
+6.indel_result.zip: sequence alignment and indel position finding result.
+7.correlation.zip: Spearman’s correlation result.
