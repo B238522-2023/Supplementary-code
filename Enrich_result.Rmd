@@ -1,0 +1,236 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r setup, include=FALSE}
+# 加载所需的库
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(openxlsx)
+library(knitr)
+```
+
+# read the data
+```{r}
+reactome_data <- read.delim("C:/Users/Lenovo/Desktop/dissertation/gene_enrichment/Internal/DAVID/DAVID_REACTOME_Pathway_Internal.txt", sep = "\t")
+sequence_data <- read.delim("C:/Users/Lenovo/Desktop/dissertation/dataset/human_tagscores_w_alphafold.txt", sep = "\t")
+group_info_data <- read_excel("C:/Users/Lenovo/Desktop/dissertation/dataset/Gene_level_grouped.xlsx") 
+```
+
+```{r}
+# Extract gene lists from specific entries
+specific_terms <- c("R-HSA-9012999~RHO GTPase cycle", 
+                    "R-HSA-9716542~Signaling by Rho GTPases, Miro GTPases and RHOBTB3", 
+                    "R-HSA-194315~Signaling by Rho GTPases")
+specific_genes <- reactome_data %>%
+  filter(Term %in% specific_terms) %>%
+  pull(Genes) %>%
+  strsplit(",") %>%
+  unlist() %>%
+  trimws()   #Remove leading and trailing spaces
+```
+
+# protein length analysis
+```{r}
+# Screening length data for specific genes(REATCOME term)
+specific_gene_lengths <- group_info_data %>%
+  filter(Uniprot %in% specific_genes) %>%
+  mutate(Group = "GTPase-associated") %>%
+  select(Uniprot, `Protein length`, Group)
+
+internal_lengths <- group_info_data %>%
+  filter(Group == "Internal") %>%
+  select(Uniprot, `Protein length`, Group)
+
+n_terminus_lengths <- group_info_data %>%
+  filter(Group == "N terminus") %>%
+  select(Uniprot, `Protein length`, Group)
+
+c_terminus_lengths <- group_info_data %>%
+  filter(Group == "C terminus") %>%
+  select(Uniprot, `Protein length`, Group)
+
+# Merge data for visualization
+lengths_data <- bind_rows(
+  specific_gene_lengths,
+  internal_lengths,
+  n_terminus_lengths,
+  c_terminus_lengths
+)
+```
+
+# protein legnth statistics
+```{r}
+# Calculate protein length statistics for all groups
+protein_length_stats <- lengths_data %>%
+  group_by(Group) %>%
+  summarise(
+    Count = n(),
+    Mean = mean(`Protein length`, na.rm = TRUE),
+    SD = sd(`Protein length`, na.rm = TRUE),
+    Min = min(`Protein length`, na.rm = TRUE),
+    Q1 = quantile(`Protein length`, 0.25, na.rm = TRUE),
+    Median = median(`Protein length`, na.rm = TRUE),
+    Q3 = quantile(`Protein length`, 0.75, na.rm = TRUE),
+    Max = max(`Protein length`, na.rm = TRUE)
+  )
+
+# Print protein length statistics
+print(protein_length_stats)
+kable(protein_length_stats, caption = "Statistical Summary of Protein Legnth")
+write.xlsx(protein_length_stats, "protein_length_stats.xlsx")
+```
+#protein length visualisation
+```{r}
+# boxplot (just a trial, won't used it)
+ggplot(lengths_data, aes(x = Group, y = `Protein length`, fill = Group)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Gene Length Distribution",
+       x = "Gene Category",
+       y = "Protein Length")
+
+# density plot
+density_plot <- ggplot(lengths_data, aes(x = `Protein length`, fill = Group)) +
+      geom_density(alpha = 0.75) +
+      scale_x_log10() + 
+      theme_minimal() +
+              theme(
+              #plot.title = element_text(size = 28),       # Set the headline font size
+              axis.title.x = element_text(size = 14),     # Set the X-axis title font size
+              axis.title.y = element_text(size = 14),     # Set the Y-axis title font size
+              axis.text.x = element_text(size = 14),      # Set X-axis scale label font size
+              axis.text.y = element_text(size = 14),      # Set the Y-axis scale label font size
+              strip.text = element_text(size = 14),        # Set the faceted label font size
+              legend.text = element_text(size = 14)      # Set the legend font size
+            )+
+      labs(title = "Gene Length Density",
+           x = "Protein Length",
+           y = "Density")+
+      scale_fill_brewer(palette = "Dark2")
+density_plot
+
+# violin plot
+violin_plot <- ggplot(lengths_data,aes(x = Group, y = `Protein length`, fill = Group)) +
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA)+
+  scale_y_log10() +
+  labs(title = "Gene Length Distribution",
+       x = "Group",
+       y = "Protein Length")+
+  theme_minimal()+
+          theme(
+          #plot.title = element_text(size = 28),       # 设置标题字体大小
+          axis.title.x = element_text(size = 14),     # 设置X轴标题字体大小
+          axis.title.y = element_text(size = 14),     # 设置Y轴标题字体大小
+          axis.text.x = element_text(size = 14),      # 设置X轴刻度标签字体大小
+          axis.text.y = element_text(size = 14),      # 设置Y轴刻度标签字体大小
+          strip.text = element_text(size = 14),        # 设置分面标签字体大小
+          legend.text = element_text(size = 14)      # 设置图例字体大小
+        )+
+  scale_fill_brewer(palette = "Dark2")
+violin_plot
+
+ggsave("density_plot_high_res.png", plot = density_plot, width = 8, height = 5, dpi = 600)
+ggsave("violin_plot_high_res.png", plot = violin_plot, width = 8, height = 5, dpi = 600)
+```
+# plddt analysis
+```{r}
+# Screening pLDDT data for specific genes(REATCOME term)
+specific_plddt <- sequence_data %>%
+  filter(Uniprot %in% specific_genes)
+
+# Filter pLDDT data for Internal categories
+internal_plddt <- sequence_data %>%
+  filter(Uniprot %in% internal_lengths$Uniprot)
+
+# Filter pLDDT data for N-terminus and C-terminus
+n_terminus_plddt <- sequence_data %>%
+  filter(Uniprot %in% n_terminus_lengths$Uniprot)
+
+c_terminus_plddt <- sequence_data %>%
+  filter(Uniprot %in% c_terminus_lengths$Uniprot)
+
+# Define the function that calculates the proportion of pLDDTs less than 70 per cent
+calc_plddt_below_70 <- function(data) {
+  mean(data$pLDDT < 70) * 100  # 计算小于70%的百分比
+}
+
+# Calculate the proportion of each classification
+specific_plddt_below_70 <- calc_plddt_below_70(specific_plddt)
+internal_plddt_below_70 <- calc_plddt_below_70(internal_plddt)
+n_terminus_plddt_below_70 <- calc_plddt_below_70(n_terminus_plddt)
+c_terminus_plddt_below_70 <- calc_plddt_below_70(c_terminus_plddt)
+
+# Output results
+cat("Specific genes pLDDT < 70%: ", specific_plddt_below_70, "%\n",
+    "N-terminus pLDDT < 70%: ", n_terminus_plddt_below_70, "%\n",
+    "C-terminus pLDDT < 70%: ", c_terminus_plddt_below_70, "%\n",
+    "Internal genes pLDDT < 70%: ", internal_plddt_below_70, "%\n")
+
+plddt_data <- bind_rows(
+  mutate(internal_plddt, Group = "Internal"),
+  mutate(specific_plddt, Group = "GTPase-associated"),
+  mutate(n_terminus_plddt, Group = "N terminus"),
+  mutate(c_terminus_plddt, Group = "C terminus")
+)
+```
+# Calculate and output pLDDT statistics for each group
+```{r}
+plddt_group_stats <- plddt_data %>%
+  group_by(Group) %>%
+  summarise(
+    Count = n(),
+    Mean = mean(pLDDT, na.rm = TRUE),
+    SD = sd(pLDDT, na.rm = TRUE),
+    Min = min(pLDDT, na.rm = TRUE),
+    Q1 = quantile(pLDDT, 0.25, na.rm = TRUE),
+    Median = median(pLDDT, na.rm = TRUE),
+    Q3 = quantile(pLDDT, 0.75, na.rm = TRUE),
+    Max = max(pLDDT, na.rm = TRUE)
+  )
+
+
+print(plddt_group_stats)
+kable(plddt_group_stats, caption = "Statistical Summary of plddt")
+write.xlsx(plddt_group_stats, "plddt_group_stats.xlsx")
+```
+
+# plddt visualisation
+```{r}
+# density plot
+plddt_data$Group <- factor(plddt_data$Group, levels = c("C terminus", "Internal", "N terminus", "GTPase-associated"))
+
+density_plddt <- ggplot(plddt_data, aes(x = pLDDT, fill = Group)) +
+  geom_density(alpha = 0.75) +
+  labs(title = "Density of pLDDT Scores by Group",
+       x = "pLDDT Score",
+       y = "Density") +
+  theme_minimal() +
+      theme(
+    #plot.title = element_text(size = 28),       # 设置标题字体大小
+    axis.title.x = element_text(size = 14),     # 设置X轴标题字体大小
+    axis.title.y = element_text(size = 14),     # 设置Y轴标题字体大小
+    axis.text.x = element_text(size = 14),      # 设置X轴刻度标签字体大小
+    axis.text.y = element_text(size = 14),      # 设置Y轴刻度标签字体大小
+    strip.text = element_text(size = 14),        # 设置分面标签字体大小
+    legend.text = element_text(size = 14)      # 设置图例字体大小
+  )+
+  scale_fill_brewer(palette = "Dark2")
+density_plddt
+ggsave("density_plddt_high_res.png", plot = density_plddt, width = 8, height =5, dpi = 600)
+
+# violin plot
+violin_plot_2 <- ggplot(plddt_data,aes(x = Group, y = pLDDT, fill = Group)) +
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA)+
+  # scale_y_log10() +
+  labs(title = "pLDDT Scores Distribution (<70)",
+       x = "Group",
+       y = "pLDDT Score")+
+  theme_minimal()+
+  scale_fill_brewer(palette = "Dark2")
+violin_plot_2
+```
