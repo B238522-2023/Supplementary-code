@@ -7,7 +7,6 @@ code availability:
 6. indel_uniprot.py: UniProt entry transform to UniProt accession number.
 7. ROC.Rmd: ROC and PR analysis for benchmarking with clinical human insertion data.
 
-data availability:
 1. Gene_level_grouped.xlsx: Gouped proteins that prefer different tagging site.
 2. Gene_enrichment.zip: Gene enrichment results.
 3. pubmed_query.zip: Queried PubMed ID for model validation.
