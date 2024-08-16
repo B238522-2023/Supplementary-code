@@ -4,16 +4,16 @@ if (!require("writexl")) install.packages("writexl", repos='http://cran.us.r-pro
 if (!require("dplyr")) install.packages("readxl", repos='http://cran.us.r-project.org')
 # install.packages("ggplot2", repos='http://cran.us.r-project.org')
 
-remotes::install_version('ggplot2', version='3.5.1')
+#remotes::install_version('ggplot2', version='3.5.1')
 if (!require("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
-BiocManager::install(version = "3.19")
-BiocManager::install("ggtree")
-BiocManager::install("BiocFileCache")
-BiocManager::install("clusterProfiler") 
-BiocManager::install("org.Hs.eg.db")
-BiocManager::install("AnnotationDbi")
-BiocManager::install("biomaRt")
+#BiocManager::install(version = "3.19")
+#BiocManager::install("ggtree")
+#BiocManager::install("BiocFileCache")
+#BiocManager::install("clusterProfiler") 
+#BiocManager::install("org.Hs.eg.db")
+#BiocManager::install("AnnotationDbi")
+#BiocManager::install("biomaRt")
 
 ```
 # load libraries
@@ -130,10 +130,20 @@ percentage_plot <- ggplot(group_counts, aes(x = Group, y = Percentage, fill = Gr
        x = "Group",
        y = "Number of Genes") +
   theme_minimal() +
+        theme_minimal() +
+              theme(
+              #plot.title = element_text(size = 28),       # Set the headline font size
+              axis.title.x = element_text(size = 14),     # Set the X-axis title font size
+              axis.title.y = element_text(size = 14),     # Set the Y-axis title font size
+              axis.text.x = element_text(size = 14),      # Set X-axis scale label font size
+              axis.text.y = element_text(size = 14),      # Set the Y-axis scale label font size
+              strip.text = element_text(size = 14),        # Set the faceted label font size
+              legend.text = element_text(size = 14)      # Set the legend font size
+            )+
   scale_fill_brewer(palette = "Dark2")
 
 percentage_plot
-
+ggsave("C:/Users/Lenovo/Desktop/dissertation/dataset/percentage_plot.png", plot = percentage_plot, width = 8, height = 5, dpi = 600)
 ```
 ## plot binned histogram -- Distribution of Number of Sequences (Internal)
 ```{r}
