@@ -1,0 +1,320 @@
+---
+title: "enrichment_plot"
+author: "Chloe"
+date: "2024-06-05"
+output:
+  html_document: default
+  pdf_document: default
+  always_allow_html: true
+params:
+  base_path: "C:/Users/Lenovo/Desktop/dissertation/gene_enrichment"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(scales) 
+library(dplyr)
+library(openxlsx)
+library(ggplot2)
+library(plotly)
+library(stringr)
+library(readr)
+```
+
+```{r}
+end_types <- c("N_terminal", "Internal", "C_terminal")
+panther_categories <- c("Protein_Class")
+david_categories <- c("BP", "CC", "MF", "KEGG", "INTERPRO")
+
+# 处理PANTHER数据
+for (end_type in end_types) {
+  for (category in panther_categories) {
+    data_path <- file.path(params$base_path, end_type, "PANTHER", paste("pantherGeneList_", end_type, ".txt", sep = ""))
+    
+    # 读取数据
+    data <- read_delim(data_path, "\t", escape_double = FALSE, trim_ws = TRUE, col_types = cols())
+    data$"PANTHER Protein Class"[data$"PANTHER Protein Class" == "" | is.na(data$"PANTHER Protein Class")] <- "No PANTHER category assigned (UNCLASSIFIED)"
+
+    # 处理 Protein Classes 数据
+    if ("PANTHER Protein Class" %in% names(data)) {
+      protein_classes <- table(data$"PANTHER Protein Class")
+      df <- as.data.frame(protein_classes)
+      names(df) <- c("Protein_Class", "Count")
+
+      df$Protein_Class_New <- as.character(df$Protein_Class)
+      df$Protein_Class_New[df$Protein_Class_New == ""] <- "No PANTHER category assigned (UNCLASSIFIED)"
+      df$Percentage <- (df$Count / sum(df$Count)) * 100
+      
+      # 绘制图表，显示前8个最高计数的蛋白类
+      filtered_df <- df %>%
+        arrange(desc(Count)) %>%
+        slice(1:8)
+      
+      # 计算标签位置
+      filtered_df$label_position <- filtered_df$Count + 0.05 * max(filtered_df$Count)
+
+      p1 <- ggplot(filtered_df, aes(x = reorder(Protein_Class, -Count), y = Count, fill = Protein_Class)) +
+            geom_col() +
+            geom_label(aes(label = sprintf("%d (%.1f%%)", Count, Percentage), y = label_position),  
+                       fill = "white",  
+                       color = "black",  
+                       size = 3) +  
+            labs(title = paste("Top 8", category, "in", end_type), y = "Protein Class") +
+            theme_minimal() +
+            scale_fill_brewer(palette = "Dark2") +
+            theme(axis.text.x = element_text(angle = 45, hjust = 1),
+                  axis.title.x = element_blank(),
+                  legend.position = "none",
+                  panel.grid.major = element_blank(),
+                  panel.grid.minor = element_blank(),
+                  plot.margin = margin(0, 0, 0, 35, "mm")
+                  )
+      
+      p2 <- ggplot(filtered_df, aes(x = Count, y = reorder(Protein_Class, -Count), fill = Protein_Class)) +
+      geom_bar(stat = "identity") +
+      geom_label(aes(label = sprintf("%d (%.1f%%)", Count, Percentage)),  
+                 position = position_nudge(x = 50),  
+                 fill = "white",  
+                 color = "black",  
+                 size = 5) +  # 标签字体大小
+      labs(title = paste("Top 8", category, "in", end_type), y = "Protein Class") +
+      theme_minimal() +
+      scale_fill_brewer(palette = "Dark2") +
+      theme(axis.text.x = element_text(size = 14, hjust = 1),
+            axis.text.y = element_text(size = 14),
+            axis.title.x = element_text(size = 16),
+            axis.title.y = element_text(size = 16),
+            plot.title = element_text(size = 20, face = "bold"),
+            legend.position = "none")
+
+      file_name_2 <- sprintf("Plot_%s_%s_p2.png", end_type, category)
+      ggsave(file_name_2, plot = p2, width = 20, height = 5, dpi = 600)
+                
+      print(p2)
+      # 打印filtered_df以检查数据
+      print(filtered_df)
+    }
+  }
+}
+
+```
+
+```{r}
+# 处理DAVID数据
+for (end_type in end_types) {
+  for (category in david_categories) {
+    data_path <- file.path(params$base_path, end_type, "DAVID", paste("DAVID_", category, "_", end_type, ".txt", sep = ""))
+    
+    # 读取数据
+    data <- read_delim(data_path, "\t", escape_double = FALSE, trim_ws = TRUE, col_types = cols())
+    
+    # 处理 GO 数据
+    if ("Term" %in% names(data) && "Count" %in% names(data) && "PValue" %in% names(data)) {
+      # 提取前10条数据
+      top_data <- data %>%
+        head(10)
+      top_data$Term <- gsub("GO:[0-9]+~", "", top_data$Term)
+      
+      p_bar <- ggplot(top_data, aes(x = reorder(Term, -Count), y = Count, fill = -log10(PValue))) +
+        geom_bar(stat = "identity") +
+        coord_flip() +
+        labs(title = paste(end_type, category, "Top 10 Enrichment Analysis"), x = "Term", y = "Count") +
+        scale_fill_gradient(low = "#F5F5F5", high = "#4a1486") +
+        theme_bw()
+      
+      print(p_bar)
+      
+      # 绘制点图
+      p_point <- ggplot(top_data, aes(x = `Fold Enrichment`, y = Term, size = Count, color = -log10(PValue))) +
+        geom_point(aes(size = Count, color = -log10(PValue))) +
+        scale_color_gradient(low = "blue", high = "red") +
+        facet_grid(Category ~ ., scale = 'free_y', space = 'free_y') +
+        theme_bw() +
+        labs(x = "Fold Enrichment",
+             y = "Term",
+             title = paste(end_type, category, "Enrichment"),
+             color = "-log10(PValue)",
+             size = "Count")
+      
+      print(p_point)
+
+    } else {
+      cat(paste("Data missing expected columns in", data_path, "\n"))
+    }
+  }
+}
+
+```
+# try_GO----final!!!
+```{r}
+david_categories <- c("GO", "INTERPRO", "REACTOME_Pathway", "DISGENET_Disease", "Sequence_Feature")
+end_types <- c("N_terminal", "Internal", "C_terminal")
+panther_categories <- c("Protein_Class")
+
+# 循环处理每种类型和类别的数据
+for (end_type in end_types) {
+  for (category in david_categories) {
+    data_path <- file.path(params$base_path, end_type, "DAVID", paste("DAVID_", category, "_", end_type, ".txt", sep = ""))
+    
+    # 读取数据
+    #data <- read_delim(data_path, "\t", escape_double = FALSE, trim_ws = TRUE, col_types = cols())
+
+    # 读取数据
+    data <- read_delim(data_path, "\t", escape_double = FALSE, trim_ws = TRUE, col_types = cols()) %>%
+      mutate(Term = sub(".*~", "", Term)) # 修改术语列，删除~及其前面的内容
+    
+    # 处理数据
+    if ("Term" %in% names(data) && "Count" %in% names(data) && "PValue" %in% names(data) && "Fold Enrichment" %in% names(data)) {
+      # 提取前10条数据
+      data_top10 <- data %>%
+        group_by(Category) %>%       # 按类别分组
+        arrange(PValue, .by_group = TRUE) %>%  # 每个组内按PValue升序排列
+        slice_head(n = 10) %>%       # 从每组中选择前10个记录
+        ungroup()                    # 去除分组，使得后续操作不受分组影响
+      
+      
+      # 创建ggplot对象
+      p_point <- ggplot(data_top10, aes(x = `Fold Enrichment`, y = Term, size = Count, color = -log10(PValue))) +
+        geom_point() +  # 绘制点
+        scale_color_gradientn(colors = c("blue", "green", "yellow", "red"),
+                              values = rescale(c(0, 5, 10, 40))) +  # P值颜色渐变
+        facet_grid(Category ~ ., scales = 'free_y', space = 'free_y') +
+        theme_bw() +  # 使用白色背景主题
+        labs(x = "Fold Enrichment",
+             y = "Term",
+             title = paste(end_type, category, "Enrichment", sep = " "),
+             color = "-log10(PValue)",
+             size = "Count")+
+        theme(
+          #plot.title = element_text(size = 28),       
+          axis.title.x = element_text(size = 14),     
+          axis.title.y = element_text(size = 14),     
+          axis.text.x = element_text(size = 14),      
+          axis.text.y = element_text(size = 14),      
+          strip.text = element_text(size = 14),        
+          legend.text = element_text(size = 14)      
+        )
+        #labs(title = NULL) # Remove the title
+        
+        
+      
+      # 显示图形
+      print(p_point)
+      
+      # 保存图像
+      output_path <- file.path(params$base_path, end_type, paste("enrichment_", end_type, "_", category, ".png", sep = ""))
+      ggsave(output_path, plot = p_point, width = 10, height = 5, dpi = 600, units = "in")
+    } else {
+      cat(paste("Data missing expected columns in", data_path, "\n"))
+    }
+  }
+}
+```
+# try_all
+```{r}
+data_Internal_all <- read.table("C:/Users/Lenovo/Desktop/dissertation/gene_enrichment/Internal/DAVID/Internal_all.txt", sep="\t", header=TRUE, quote="", fill=TRUE, comment.char="")
+
+data_Internal_all <- data_Internal_all %>%
+  mutate(Category = case_when(
+    grepl("GOTERM_BP_DIRECT", Category) ~ "BP",  # 如果Category包含"GOTERM_BP_DIRECT"，则归类为"BP"
+    grepl("GOTERM_CC_DIRECT", Category) ~ "CC",  # 如果Category包含"GOTERM_CC_DIRECT"，则归类为"CC"
+    grepl("GOTERM_MF_DIRECT", Category) ~ "MF",  # 如果Category包含"GOTERM_MF_DIRECT"，则归类为"MF"
+    grepl("REACTOME_PATHWAY", Category) ~ "Pathway",  # 可以为"REACTOME_PATHWAY"添加新类别名"Pathway"
+    grepl("INTERPRO", Category) ~ "Interpro",
+    grepl("DISGENET", Category) ~ "Disease",
+    #grepl("UP_SEQ_FEATURE", Category) ~ "Sequence Feature",
+    TRUE ~ Category  # 保留原始分类，如果没有匹配的情况
+  ))
+
+
+data_Internal_all_top10 <- data_Internal_all %>%
+  group_by(Category) %>%       # 按类别分组
+  arrange((PValue), .by_group = TRUE) %>%  # 每个组内按PValue降序排列
+  slice_head(n = 10) %>%       # 从每组中选择前10个记录
+  ungroup()
+
+p_all_Internal <-  ggplot(data_Internal_all_top10, aes(x = `Fold.Enrichment`, y = Term, size = `X.`, color = -log10(PValue))) +
+      geom_point(aes(size = X., color = -log10(PValue))) +  # 绘制点
+      scale_color_gradientn(colors = c("blue", "green", "yellow", "red"),
+                          values = rescale(c(0, 5, 10, 20))) +    # P值颜色渐变
+      facet_grid(Category ~ ., scale = 'free_y', space = 'free_y') +
+      theme_bw() +  # 使用白色背景主题
+      labs(x = "Fold Enrichment",
+           y = "Term",
+           title = "Internal Enrichment",
+           color = "-log10(PValue)",
+           size = "Percentage")
+p_all_Internal
+ggsave("enrichment_all_Internal.png", plot = p_all_Internal, width = 9, height = 16, dpi = 1000, units = "in")
+
+```
+
+#PANTHER
+```{r}
+# 载入必要的库
+library(dplyr)
+library(tidyr)
+library(tidyverse)    
+
+# 读取数据
+df_C_terminal <- read.csv("C:/Users/Lenovo/Desktop/dissertation/gene_enrichment/C_terminal/PANTHER/pantherGeneList_C_terminal.txt",  sep = "\t")
+df_N_terminal <- read.csv("C:/Users/Lenovo/Desktop/dissertation/gene_enrichment/N_terminal/PANTHER/pantherGeneList_N_terminal.txt",  sep = "\t")
+df_Internal <- read.csv("C:/Users/Lenovo/Desktop/dissertation/gene_enrichment/Internal/PANTHER/pantherGeneList_Internal.txt",  sep = "\t")
+
+# 清洗数据，提取并清理'PANTHER Protein Class'列
+clean_data <- function(df) {
+    df %>%
+    mutate(PANTHER_Protein_Class = gsub("\\(PC.*\\)$", "", `PANTHER.Protein.Class`)) %>%
+    select(PANTHER_Protein_Class)
+}
+
+df_C <- clean_data(df_C_terminal)
+df_N <- clean_data(df_N_terminal)
+df_I <- clean_data(df_Internal)
+
+# 计算各个数据集中蛋白类别的数量
+count_proteins <- function(df) {
+  df %>%
+    group_by(PANTHER_Protein_Class) %>%
+    summarise(Count = n(), .groups = 'drop')
+}
+
+counts_C <- count_proteins(df_C)
+counts_N <- count_proteins(df_N)
+counts_I <- count_proteins(df_I)
+
+# 合并数据以便进行比较
+compare_df <- reduce(list(counts_C, counts_N, counts_I), full_join, by = "PANTHER_Protein_Class") %>%
+              replace(is.na(.), 0) # 处理NA值
+# 重命名列以提高可读性
+compare_df <- compare_df %>%
+  rename(Count_C = Count.x, Count_N = Count.y, Count_I = Count)
+
+# 制作Fisher Exact Test的比较矩阵并计算p值
+fisher_test <- function(x, y) {
+  matrix <- matrix(c(x, sum(x) - x, y, sum(y) - y), ncol = 2)
+  test <- fisher.test(matrix)
+  test$p.value
+}
+
+# 应用Fisher检验并计算p值
+compare_df$p_value_CN <- mapply(fisher_test, compare_df$Count.x, compare_df$Count.y)
+compare_df$p_value_CI <- mapply(fisher_test, compare_df$Count.x, compare_df$Count)
+compare_df$p_value_NI <- mapply(fisher_test, compare_df$Count.y, compare_df$Count)
+
+# 应用Benjamini-Hochberg方法进行FDR校正
+p_adjust_fdr <- function(p) {
+  p.adjust(p, method = "BH")
+}
+
+compare_df$fdr_CN <- p_adjust_fdr(compare_df$p_value_CN)
+compare_df$fdr_CI <- p_adjust_fdr(compare_df$p_value_CI)
+compare_df$fdr_NI <- p_adjust_fdr(compare_df$p_value_NI)
+
+# 输出结果
+print(compare_df)
+
+```
+
+
+
