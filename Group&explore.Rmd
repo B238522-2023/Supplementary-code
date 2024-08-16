@@ -1,0 +1,199 @@
+```{r}
+if (!require("readxl")) install.packages("readxl", repos='http://cran.us.r-project.org')
+if (!require("writexl")) install.packages("writexl", repos='http://cran.us.r-project.org')
+if (!require("dplyr")) install.packages("readxl", repos='http://cran.us.r-project.org')
+# install.packages("ggplot2", repos='http://cran.us.r-project.org')
+
+remotes::install_version('ggplot2', version='3.5.1')
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install(version = "3.19")
+BiocManager::install("ggtree")
+BiocManager::install("BiocFileCache")
+BiocManager::install("clusterProfiler") 
+BiocManager::install("org.Hs.eg.db")
+BiocManager::install("AnnotationDbi")
+BiocManager::install("biomaRt")
+
+```
+# load libraries
+```{r}
+library(readxl)
+library(writexl)
+library(dplyr)
+library(ggplot2)
+library(RColorBrewer)
+
+library(BiocFileCache)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(biomaRt)
+
+```
+
+# check the data
+```{r}
+# Read the Excel file
+data <- read_excel("Gene_level_predictions.xlsx")
+
+# Check for missing values
+print(colSums(is.na(data)))
+
+# View the structure of the data
+str(data)
+
+# Remove rows with missing values
+data <- na.omit(data)
+
+# check how many data left
+str(data)
+```
+
+# classify the tags
+
+```{r}
+# Create a new column to store the classification result
+data$Group <- NA
+
+# Classification logic: classify based on N score, C score, and Internal score
+# Check if column names are correct and handle missing values
+if (!("Internal score" %in% colnames(data)) || !("N score" %in% colnames(data)) || !("C score" %in% colnames(data))) {
+  stop("Column names do not match or are missing.")
+}
+
+for (i in 1:nrow(data)) {
+  if (!is.na(data$`Internal score`[i]) && data$`Internal score`[i] >= data$`N score`[i] && data$`Internal score`[i] >= data$`C score`[i]) {
+    data$Group[i] <- "Internal"
+  } else if (!is.na(data$`N score`[i]) && data$`N score`[i] >= data$`C score`[i]) {
+    data$Group[i] <- "N terminus"
+  } else if (!is.na(data$`C score`[i])) {
+    data$Group[i] <- "C terminus"
+  }
+}
+
+```
+
+# filter out datas depending on number of sequences
+
+```{r}
+# Set a threshold, e.g., filter out rows with Number of sequences less than 10
+# threshold <- 10
+# data <- data[data$`Number of sequences` >= threshold, ]
+```
+
+# output to grouped data to file
+```{r}
+# Sort data by Group (N, C, Internal)
+data_sorted <- data %>%
+  mutate(Group = factor(Group, levels = c("N terminus", "C terminus", "Internal"))) %>%
+  arrange(Group)
+
+# Save the sorted data to an Excel file
+write_xlsx(data_sorted, "Gene_level_grouped.xlsx")
+
+# write three grouped into three files
+list_of_groups <- unique(data_sorted$Group)
+
+for (group in list_of_groups) {
+  group_data <- filter(data_sorted, Group == group)
+  group_name_no_space <- gsub(" ","",group)
+  file_name <- paste("Gene_level_", group_name_no_space, ".xlsx", sep = "")
+  write_xlsx(group_data,file_name)
+}
+```
+
+# calculate percentage of the tagging sites(N/C/Internal)
+```{r}
+# calculate percentage
+group_counts <- data %>%
+  group_by(Group) %>%
+  summarise(Count = n()) %>%
+  mutate(Percentage = round((Count / sum(Count) * 100),2))
+
+print(group_counts)
+
+# print(colnames(data))
+```
+# Descriptive statistical analysis
+## Plotting Percentage Stacked Bars: percentage vs group
+```{r}
+
+percentage_plot <- ggplot(group_counts, aes(x = Group, y = Percentage, fill = Group)) +
+  geom_col() +
+  geom_label(aes(label = paste(Count, " (", Percentage, "%)", sep = "")),# add percentage label
+            position = position_stack(vjust = 0.5), # center the label
+            fill = "white", # background color
+            color = "black", # font color
+            size = 3.5) + # font size
+  labs(title = "Percentage of Numbers by Group",
+       x = "Group",
+       y = "Number of Genes") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Dark2")
+
+percentage_plot
+
+```
+## plot binned histogram -- Distribution of Number of Sequences (Internal)
+```{r}
+data_internal <- read_excel("Gene_level_Internal.xlsx")
+data_N <- read_excel("Gene_level_Nterminus.xlsx")
+data_C <- read_excel("Gene_level_Cterminus.xlsx")
+
+binned_his <- ggplot(data_internal, aes(x = `Number of sequences`)) +
+  geom_histogram(binwidth = 500, fill = "#6A5ACD", color = "#6A5ACD") +
+  labs(title = "Distribution of Number of Sequences (Internal)",
+       x = "Number of Sequences",
+       y = "Frequency") +
+  theme_minimal() 
+
+binned_his
+
+
+p_intelnal <- ggplot(data_internal %>% mutate(SeqNlog = log(`Number of sequences`)), 
+       aes(x=SeqNlog)) + 
+        labs(x = "Log Number of Sequences (Internal)",
+             y = "Frequency") +
+ geom_histogram(aes(y=after_stat(density)), colour="black", fill="white", binwidth=0.3)+
+ geom_density(alpha=.2, fill="#8B0000") +
+theme_minimal()
+ #theme_bw()
+
+p_N <- ggplot(data_N %>% mutate(SeqNlog = log(`Number of sequences`)), 
+       aes(x=SeqNlog)) + 
+        labs(x = "Log Number of Sequences (N Terminal)",
+             y = "Frequency") +
+ geom_histogram(aes(y=after_stat(density)), colour="black", fill="white", binwidth=0.3)+
+ geom_density(alpha=.2, fill="#5D478B") +
+theme_minimal()
+ #theme_bw()
+
+p_C <- ggplot(data_C %>% mutate(SeqNlog = log(`Number of sequences`)), 
+       aes(x=SeqNlog)) + 
+        labs(x = "Log Number of Sequences (C Terminal)",
+             y = "Frequency") +
+ geom_histogram(aes(y=after_stat(density)), colour="black", fill="white", binwidth=0.3)+
+ geom_density(alpha=.2, fill="#2E8B57") +
+theme_minimal()
+ #theme_bw()
+
+p_intelnal
+p_N
+p_C
+
+```
+# Comparison between groups
+## violin plot--distribution of M value
+```{r}
+violin_plot <- ggplot(data,aes(x = Group, y = `M value`, fill = Group)) +
+  geom_violin(trim = FALSE)+
+  geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA)+
+  scale_y_log10() +
+  labs(title = "Distribution of M value by Group",
+       x = "Group",
+       y = "M value")+
+  theme_minimal()+
+  scale_fill_brewer(palette = "Dark2")
+violin_plot
+```
