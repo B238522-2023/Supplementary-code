@@ -1,0 +1,282 @@
+```{r setup, message=FALSE}
+library(Biostrings)
+library(data.table)
+library(pwalign)
+library(doParallel)
+library(foreach)
+library(dplyr)
+library(ggplot2)
+
+```
+
+# read file and set parallel backend
+```{r}
+summary_data <- fread("indel/DMS_indels.csv")
+target_seq <- summary_data$target_seq[61]
+dms_filename <- summary_data$DMS_filename[61]
+uniprot_id <- summary_data$Entry_Number[61]
+dms_id <- summary_data$DMS_id[61]
+
+
+# set indel file path
+output_dir_indel <- file.path("indel", "indel_result_HUMAN")
+base_filename <- paste0(dms_id, "_result.csv")
+output_filename_indel <- file.path(output_dir_indel, base_filename)
+
+if (!dir.exists(output_dir_indel)) {
+  dir.create(output_dir_indel, recursive = TRUE)
+}
+
+
+# set correlation file path
+
+output_dir_cor <- "indel/correlation"
+if (!dir.exists(output_dir_cor)) {
+  dir.create(output_dir_cor, recursive = TRUE)
+}
+output_filename_cor <- file.path(output_dir_cor, paste0(dms_id, "_correlations.txt"))
+
+
+
+# Create combined_data storage directory
+output_dir_combined_data <- "indel/combined_data"
+if (!dir.exists(output_dir_combined_data)) {
+  dir.create(output_dir_combined_data, recursive = TRUE)
+}
+
+# set combined_data output file name
+output_filename_combined_data <- file.path(output_dir_combined_data, paste0(dms_id, "_combined_data.csv"))
+
+# read mutant_data
+mutant_data <- fread(paste0("indel/DMS_ProteinGym_indels/", dms_filename))
+wild_type <- AAString(target_seq)
+mutant_seqs <- sapply(mutant_data$mutated_sequence, AAString)
+
+# Set up parallel backend
+no_cores <- detectCores() - 20  # Reserve 3 cores to avoid overload
+registerDoParallel(no_cores)
+```
+# define functions
+```{r}
+# 1.alignment
+# pairwiseAlignment(pattern, subject)
+# because we are focusing at indel, so I set the gapopening score to 0.
+# mclapply: Utilise multi-core processors to accelerate processing
+alignments <- mclapply(mutant_seqs, function(ms) {
+    pairwiseAlignment(wild_type, ms)
+}, mc.cores = no_cores)
+
+
+# 2.Function to find positions of insertions and deletions
+find_gaps <- function(sequence) {
+  gaps <- which(strsplit(sequence, "")[[1]] == "-")
+  # Finding continuous gap sequences
+  if (length(gaps) > 0) {
+    groups <- split(gaps, cumsum(c(1, diff(gaps) != 1)))
+    return(groups)
+  } else {
+    return(list())
+  }
+}
+
+# 3.Functions to format insertion and deletion information
+format_indels <- function(indel_positions, sequence, type){
+  if(length(indel_positions) == 0){
+    return("None") 
+  }
+  sapply(indel_positions, function(group){
+    pos <- min(group)  # Get the starting position of an insertion or deletion
+    len <- length(group)  # Get the length of the insertion or deletion
+    indel_seq <- substring(sequence, pos, pos + len - 1)  # Get inserted or deleted sequence segments
+
+    if (len > 1){
+      # Multi-character insertion or deletion
+      if (type == "deletion") {
+        paste("'", indel_seq, "'", "(", len, ")", " deleted in ", "'",  pos, "'", sep = "")
+      } else if (type == "insertion") {
+        paste("'", indel_seq, "'", "(", len, ")", " inserted at ", "'",  pos, "'", sep = "")
+      }
+    } else {
+      # Single character insertion or deletion
+      if (type == "deletion") {
+        paste("'", indel_seq, "'", " deleted in ", "'",  pos, "'", sep = "")
+      } else if (type == "insertion") {
+        paste("'", indel_seq, "'", " inserted at ", "'",  pos, "'", sep = "")
+      }
+    }
+  }, USE.NAMES = FALSE)
+}
+```
+# get the results
+```{r}
+# Parse alignment results
+results <- lapply(seq_along(alignments), function(i)  {
+  aln <- alignments[[i]]
+  ms <- mutant_data$mutated_sequence[i]
+  
+  dms_score <- mutant_data$DMS_score[i]
+  dms_score_bin <- mutant_data$DMS_score_bin[i]
+  # Extract alignment patterns and subject sequences
+  wild_type_aligned <- as.character(aln@pattern)
+  mutant_aligned <- as.character(aln@subject)
+  
+  
+  # Find positions of insertions and deletions
+  insertions <- find_gaps(wild_type_aligned) # Find insertion positions in wild-type sequences
+  deletions <- find_gaps(mutant_aligned)   # Find deletion positions in wild-type sequence
+  
+  formatted_insertions <- if(length(insertions) > 0) {
+    paste(format_indels(insertions, mutant_aligned, "insertion"), collapse=", ")
+  } else {
+    "None"
+  }
+  
+  formatted_deletions <- if(length(deletions) > 0) {
+    paste(format_indels(deletions, wild_type_aligned, "deletion"), collapse=", ")
+  } else {
+    "None"
+  }
+  
+  list(
+    ID = i,
+    DMS_Score = dms_score,
+    DMS_Score_Bin = dms_score_bin,
+    mutated_sequence = ms,
+    Alignment = paste(mutant_aligned, wild_type_aligned, sep = "\n"),
+    Align_score = score(aln),
+    Insertion_pos = insertions,
+    Deletion_pos = deletions,
+    Insertions = formatted_insertions,
+    Deletions = formatted_deletions,
+    NumberOfInsertionSites = length(insertions),
+    NumberOfDeletionSites = length(deletions)
+  )
+  
+})
+
+cleaned_results <- lapply(results, function(item) {
+  # Replace NULL with NA or other appropriate default value
+  item <- lapply(item, function(x) if(is.null(x)) NA else x)
+
+  
+  if(length(item$Insertion_pos) == 0) {  
+    item$Insertion_pos <- NA
+  }
+  if(length(item$Deletion_pos) == 0) {   
+    item$Deletion_pos <- NA
+  }
+
+  return(item)
+})
+```
+
+```{r}
+results_df <- rbindlist(cleaned_results, fill = TRUE)
+fwrite(results_df, output_filename_indel)
+```
+# correlation
+## 1. get data of each position
+```{r}
+# 1. get DMS_Score of each position
+results_df$Insertion_pos <- sapply(results_df$Insertion_pos, toString)
+
+# Filter out rows where Insertion_pos is not NA
+results_df <- results_df %>%
+  filter(NumberOfInsertionSites > 0)
+
+
+# Use dplyr to group and summarise data
+# Calculate a mean DMS_score for each insertion site, for the 2 groups--0,1
+insertions_with_scores_0 <- results_df %>%
+  filter(DMS_Score_Bin == 0) %>%
+  group_by(Insertion_pos) %>%
+  summarise(
+    DMS_Score_Bin = first(DMS_Score_Bin),
+    Average_DMS_Score = mean(DMS_Score, na.rm = TRUE),
+    Count = n()
+  )
+
+insertions_with_scores_1 <- results_df %>%
+  filter(DMS_Score_Bin == 1) %>%
+  group_by(Insertion_pos) %>%
+  summarise(
+    DMS_Score_Bin = first(DMS_Score_Bin),
+    Average_DMS_Score = mean(DMS_Score, na.rm = TRUE),
+    Count = n()
+  )
+
+print(insertions_with_scores_0)
+print(insertions_with_scores_1)
+
+# Merge data sets with scores of 0 and 1
+combined_insertions <- rbind(insertions_with_scores_0, insertions_with_scores_1)
+
+# 2. get Tagscore/RSA/pLDDT of each position
+residue_data <- read.table("indel/human_tagscores_w_alphafold.txt", header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+filtered_residue_data <- residue_data %>% filter(Uniprot == uniprot_id)
+# Data type conversion to ensure correct value columns
+filtered_residue_data$TagScore <- as.numeric(filtered_residue_data$TagScore)
+filtered_residue_data$RSA <- as.numeric(filtered_residue_data$RSA)
+filtered_residue_data$pLDDT <- as.numeric(filtered_residue_data$pLDDT)
+
+# 3. Merge data sets
+combined_data <- merge(combined_insertions, filtered_residue_data, by.x = "Insertion_pos", by.y = "Residue", all = TRUE)
+
+#try
+library(psych)
+describe(combined_data)
+```
+## 2.data frame for correlation analysis
+```{r}
+# `combined_data` contains all the merged data
+fit_data <- combined_data[combined_data$DMS_Score_Bin == 1, ]
+not_fit_data <- combined_data[combined_data$DMS_Score_Bin == 0, ]
+
+# Calculate the correlation of fit groups
+cor_fit_pLDDT <- cor(fit_data$pLDDT, fit_data$Average_DMS_Score, use = "complete.obs", method = "spearman")
+print(paste("Correlation between pLDDT and Average DMS Score for 'fit':", cor_fit_pLDDT))
+cor_fit_RSA <- cor(fit_data$RSA, fit_data$Average_DMS_Score, use = "complete.obs", method = "spearman")
+print(paste("Correlation between RSA and Average DMS Score for 'fit':", cor_fit_RSA))
+cor_fit_TagScore <- cor(fit_data$TagScore, fit_data$Average_DMS_Score, use = "complete.obs", method = "spearman")
+print(paste("Correlation between TagScore and Average DMS Score for 'fit':", cor_fit_TagScore))
+
+cor_fit_pLDDT_RSA <- cor(fit_data$pLDDT, fit_data$RSA, use = "complete.obs", method = "spearman")
+print(paste("Correlation between pLDDT and RSA for 'fit':", cor_fit_pLDDT_RSA))
+
+
+# Calculate the correlation for the not fit group
+cor_not_fit_pLDDT <- cor(not_fit_data$pLDDT, not_fit_data$Average_DMS_Score, use = "complete.obs", method = "spearman")
+print(paste("Correlation between pLDDT and Average DMS Score for 'not fit':", cor_not_fit_pLDDT))
+cor_not_fit_RSA <- cor(not_fit_data$RSA, not_fit_data$Average_DMS_Score, use = "complete.obs", method = "spearman")
+print(paste("Correlation between RSA and Average DMS Score for 'not fit':", cor_not_fit_RSA))
+cor_not_fit_TagScore <- cor(not_fit_data$TagScore, not_fit_data$Average_DMS_Score, use = "complete.obs", method = "spearman")
+print(paste("Correlation between TagScore and Average DMS Score for 'not fit':", cor_not_fit_TagScore))
+
+cor_not_fit_pLDDT_RSA <- cor(not_fit_data$pLDDT, not_fit_data$RSA, use = "complete.obs", method = "spearman")
+print(paste("Correlation between pLDDT and RSA for 'not fit':", cor_not_fit_pLDDT_RSA))
+
+
+# without grouped
+cor_tagscore <- cor(combined_data$TagScore, combined_data$Average_DMS_Score, use = "complete.obs", method = "spearman")
+cor_rsa <- cor(combined_data$RSA, combined_data$Average_DMS_Score, use = "complete.obs", method = "spearman")
+cor_plddt <- cor(combined_data$pLDDT, combined_data$Average_DMS_Score, use = "complete.obs", method = "spearman")
+cor_plddt_RSA <- cor(combined_data$pLDDT, combined_data$RSA, use = "complete.obs", method = "spearman")
+
+print(paste("Correlation between pLDDT and Average DMS Score:", cor_plddt))
+print(paste("Correlation between RSA and Average DMS Score:", cor_rsa))
+print(paste("Correlation between TagScore and Average DMS Score:", cor_tagscore))
+print(paste("Correlation between pLDDT and RSA:", cor_plddt_RSA))
+```
+## visualization
+```{r}
+
+output_text <- c(
+  paste("Correlation between TagScore and Average DMS Score:", cor_tagscore),
+  paste("Correlation between RSA and Average DMS Score:", cor_rsa),
+  paste("Correlation between pLDDT and Average DMS Score:", cor_plddt)
+)
+
+
+writeLines(output_text, output_filename_cor)
+fwrite(combined_data, output_filename_combined_data)
+```
